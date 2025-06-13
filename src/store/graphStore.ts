@@ -206,7 +206,7 @@ const useGraphStore = create<GraphState>((set, get) => {
       }
     });
   },
-  validateContext: async (additionalText = '') => {
+  validateContext: async () => {
     // TODO: API呼び出しで実際のトークン数を検証
     return get().contextState.canAddMore;
   },
