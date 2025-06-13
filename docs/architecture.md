@@ -6,7 +6,11 @@
 
 ### 1.1. コンセプト
 
-GraphVerseは、LLMとの対話をマインドマップのように視覚的に拡張していくWebアプリケーションです。従来の直線的なチャットUIとは異なり、ユーザーは対話の文脈（コンテキスト）を自由に選択し、思考の分岐や結合をグラフ構造として表現できます。これにより、より複雑で多角的な議論やアイデア創出を支援します。
+GraphVerseは、LLMとの対話をマインドマップのように視覚的に拡張していくWebアプリケーションです。従来の直線的なチャットUIとは異なり、ユーザーは対話の文脈（コンテキスト）を自由に選択し、思考の分岐や結合をグラフ構造として表現できます。
+
+**ターゲットユーザー**: 主に研究者や学生など、1つのトピックに対して広さと深さのある探究を行いたいユーザー
+**使用シーン**: 既存チャットAIの「深く探究したい」ユースケースを置き換え、情報の素早い取得よりも議論や探究に特化
+**コア価値**: グラフ構造での会話の派生・merge機能により、複雑で多角的な議論やアイデア創出を支援
 
 ### 1.2. 主要機能
 
@@ -14,10 +18,15 @@ GraphVerseは、LLMとの対話をマインドマップのように視覚的に�
     -   ユーザーとLLMの対話履歴全体をグラフとして可視化します。
     -   各対話は「ノード」としてカードUIで要約表示されます。
     -   対話間の関連性は「エッジ」として線で結ばれ、思考の流れを一望できます。
+    -   複数の独立したトピック（部分グラフ）を1つのセッション内で管理できます。
 -   **BranchView**:
-    -   現在フォーカスしている一連の対話（ブランチ）の詳細を表示します。
+    -   現在フォーカスしている一連の対話（ブランチ）の詳細を時系列順で表示します。
     -   新しい対話を入力するインターフェースを提供します。
-    -   GraphViewから任意のノードを次の対話のコンテキストとして選択できます。
+    -   複数のノードを同時にコンテキストとして選択可能です。
+-   **MergeView（新機能）**:
+    -   GraphViewから任意のノードを選択して新しい対話のコンテキストとして設定します。
+    -   単一ブランチからの派生と、複数ノードからのmergeを統一的に処理します。
+    -   コンテキストを選択しない場合は新しいトピックを開始します。
 
 ## 2. 技術スタック
 
@@ -132,9 +141,38 @@ graph TD
     -   **採用ライブラリ**: **SWR** または **React Query (@tanstack/react-query)**
     -   **理由**: データフェッチングに関する複雑なロジックをカプセル化し、宣言的に記述できます。Next.jsとの親和性も高いです。
 
-## 6. データモデル
+## 6. データモデルと機能仕様
 
-TypeScriptを用いてデータの型安全性を確保します。主要なデータモデルは以下の通りです。
+TypeScriptを用いてデータの型安全性を確保します。主要なデータモデルと機能仕様は以下の通りです。
+
+### 6.1. グラフの分岐・Merge機能
+
+**分岐（Branch）の動作**:
+- 単一ブランチの末端/途中からの派生: そのブランチ全体を継承し、自動でエッジが作成される
+- 複数ノードのcherry pick: Mergeとして扱う
+
+**Mergeの動作**:
+- 専用UIでGraphViewから欲しいノードをハイライト選択
+- 新しいノードが作成され、選択したノードからエッジが接続
+- コンテキストを0個選択 = 新トピック開始
+
+### 6.2. コンテキスト管理
+
+**LLMコンテキスト制限対応**:
+- ユーザーがコンテキスト選択時に文字数制限を表示
+- 1個ずつ選択して制限内に収める方式
+- 選択したノードの全文をLLMに送信
+
+### 6.3. セッション管理
+
+**セッションの粒度**:
+- 1セッション = 1トピック程度の粒度
+- 複数の独立した部分グラフを1セッション内で管理
+- セッション間の移動はリスト形式で履歴表示
+
+**将来の拡張性**:
+- 検索機能を考慮したデータ構造設計
+- 重複検知機能のためのメタデータ保持
 
 ```typescript:src/types/index.ts
 // グラフのノード (各チャットを表す)
@@ -148,6 +186,12 @@ export interface ChatNode {
     fullText: string; // チャットの全文
     timestamp: Date;
     isSelectedAsContext: boolean; // コンテキストとして選択されているか
+    tokenCount: number; // コンテキスト制限管理用
+    topics: string[]; // 将来の検索機能用
+    branchInfo?: {
+      parentNodeIds: string[]; // このノードの親ノード(コンテキスト元)
+      branchType: 'single' | 'merge' | 'new_topic'; // 分岐の種類
+    };
   };
 }
 
@@ -160,13 +204,35 @@ export interface ChatEdge {
   // weight?: number;
 }
 
-// グラフ全体の状態
-export interface GraphState {
+// セッション管理
+export interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: Date;
+  updatedAt: Date;
   nodes: ChatNode[];
   edges: ChatEdge[];
+}
+
+// コンテキスト管理
+export interface ContextState {
+  selectedNodeIds: string[];
+  estimatedTokenCount: number;
+  maxTokenLimit: number;
+  canAddMore: boolean;
+}
+
+// グラフ全体の状態
+export interface GraphState {
+  currentSession: ChatSession;
+  sessions: ChatSession[];
+  contextState: ContextState;
   // アクションを定義
   addNode: (node: ChatNode) => void;
-  // ...その他のアクション
+  addEdge: (edge: ChatEdge) => void;
+  selectContext: (nodeIds: string[]) => void;
+  createNewSession: (title: string) => void;
+  switchSession: (sessionId: string) => void;
 }
 ```
 
@@ -174,23 +240,51 @@ export interface GraphState {
 
 Next.jsのAPI Routesを用いて、バックエンドAPIを構築します。
 
+### 7.1. チャットAPI
+
 -   **エンドポイント**: `POST /api/chat`
 -   **リクエストボディ**:
     ```json
     {
       "prompt": "新しいプロンプトのテキスト",
-      "contextNodeIds": ["node-1", "node-3"]
+      "contextNodeIds": ["node-1", "node-3"],
+      "sessionId": "session-123",
+      "branchType": "single" | "merge" | "new_topic"
     }
     ```
 -   **レスポンス (ストリーミング)**:
     -   LLMからの応答をリアルタイムにクライアントに送信するため、ストリーミング形式を採用します。
     -   成功時: 新しく生成された`ChatNode`と、それにつながる`ChatEdge`の情報を返します。
     -   失敗時: エラー情報を返します。
--   **役割**:
-    -   選択されたコンテキストノードの情報を取得します。
-    -   プロンプトとコンテキストを整形し、LLM APIに送信します。
-    -   LLMからの応答を受け取り、クライアントにストリーミングします。
-    -   応答が完了したら、新しいノードとエッジの情報をデータベースに保存します。
+
+### 7.2. セッション管理API
+
+-   **エンドポイント**: `GET /api/sessions` - セッション一覧取得
+-   **エンドポイント**: `POST /api/sessions` - 新しいセッション作成
+-   **エンドポイント**: `GET /api/sessions/[id]` - 特定セッションのデータ取得
+
+### 7.3. コンテキスト管理API
+
+-   **エンドポイント**: `POST /api/context/validate`
+-   **リクエストボディ**:
+    ```json
+    {
+      "nodeIds": ["node-1", "node-2"],
+      "additionalText": "新しいプロンプト"
+    }
+    ```
+-   **レスポンス**:
+    ```json
+    {
+      "totalTokens": 1500,
+      "maxTokens": 128000,
+      "canAddMore": true,
+      "nodeTokenCounts": {
+        "node-1": 800,
+        "node-2": 500
+      }
+    }
+    ```
 
 ## 8. ライブラリ選定
 
@@ -206,4 +300,22 @@ Next.jsのAPI Routesを用いて、バックエンドAPIを構築します。
 -   **セットアップ**: `bun install`
 -   **開発サーバー起動**: `bun dev`
 -   **ビルド**: `bun build`
--   **コード品質**: `bun run lint` を実行し、ESLintによる静的解析を行います。Prettierとの連携も設定し、コードフォーマットを自動化します。 
+-   **コード品質**: `bun run lint` を実行し、ESLintによる静的解析を行います。Prettierとの連携も設定し、コードフォーマットを自動化します。
+
+## 10. MVP機能の優先順位
+
+### フェーズ1 (コア機能)
+1. 基本的なGraphViewとBranchViewの表示
+2. 単一ブランチからの派生機能
+3. コンテキスト選択とLLM連携
+4. コンテキスト制限表示と管理
+
+### フェーズ2 (拡張機能)
+1. Merge機能の実装
+2. 新トピック開始機能
+3. セッション管理と履歴表示
+
+### フェーズ3 (将来機能)
+1. 検索機能
+2. グラフの表示最適化
+3. エクスポート機能 
